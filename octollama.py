@@ -32,14 +32,12 @@ async def ollama(queue):
 
 
 tmpl = """
-# Caddyfile
 {
     debug
     admin off
     log default {
         output stdout
         format json
-        include http.log.access
     }
 }
 

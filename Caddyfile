@@ -1,8 +1,0 @@
-
-# Caddyfile
-:80 {
-    reverse_proxy {
-        to host.docker.internal:57318 host.docker.internal:57319 host.docker.internal:57320 host.docker.internal:57321 host.docker.internal:57322 host.docker.internal:57323 host.docker.internal:57324 host.docker.internal:57325
-        lb_policy ip_hash
-    }
-}
