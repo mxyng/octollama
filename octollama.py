@@ -3,13 +3,22 @@ import re
 import asyncio
 import argparse
 import jinja2
+import tempfile
+
+
+def match(pattern, fn):
+    async def inner(line):
+        for match in re.findall(pattern, line):
+            await fn(match)
+
+    return inner
 
 
 async def ollama(queue):
     p = await asyncio.create_subprocess_exec(
         "ollama",
         "serve",
-        stdout=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
         env={
             **os.environ,
@@ -18,17 +27,36 @@ async def ollama(queue):
         },
     )
 
-    pattern = r'msg="Listening on (.+) \(version .+\)"'
-    while True:
-        line = await p.stderr.readline()
-        if not line:
-            break
-        if matches := re.findall(pattern, line.decode()):
-            print("Ollama server started", matches[0])
-            await queue.put(matches[0])
-            break
+    async def capture(outerr, *fns):
+        if not outerr:
+            return
 
-    return await p.wait()
+        while True:
+            line = (await outerr.readline()).decode().strip()
+            if not line:
+                break
+
+            print(line)
+            for fn in fns:
+                await fn(line)
+
+    async def put(line):
+        await queue.put(line)
+
+    await asyncio.gather(
+        p.wait(),
+        capture(p.stdout),
+        capture(
+            p.stderr,
+            match(
+                r'msg="Listening on (.+) \(version .+\)"',
+                put,
+            ),
+        ),
+    )
+
+    if p.returncode != 0:
+        raise RuntimeError(f"Ollama exited with code {p.returncode}")
 
 
 tmpl = """
@@ -51,16 +79,20 @@ tmpl = """
 
 
 async def caddy(queue):
+    print(f"Waiting for {queue.maxsize} Ollama instances to start...")
     instances = []
     while len(instances) < queue.maxsize:
         hostport = await queue.get()
+        print(f"Got Ollama instance: {hostport}")
         instances.append(hostport)
 
-    with open("Caddyfile", "w") as f:
+    with tempfile.NamedTemporaryFile(mode="w") as f:
         f.write(jinja2.Template(tmpl).render(instances=instances))
-
-    p = await asyncio.create_subprocess_exec("caddy", "run", "--config", "Caddyfile")
-    return await p.wait()
+        f.flush()
+        p = await asyncio.create_subprocess_exec("caddy", "run", "--config", f.name)
+        await p.communicate()
+        if p.returncode != 0:
+            raise RuntimeError(f"Caddy exited with code {p.returncode}")
 
 
 async def main():
