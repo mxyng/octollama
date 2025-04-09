@@ -2,8 +2,8 @@ import os
 import re
 import asyncio
 import argparse
-import jinja2
 import tempfile
+import json
 
 
 def match(pattern, fn):
@@ -59,25 +59,6 @@ async def ollama(queue):
         raise RuntimeError(f"Ollama exited with code {p.returncode}")
 
 
-tmpl = """
-{
-    debug
-    admin off
-    log default {
-        output stdout
-        format json
-    }
-}
-
-:54321 {
-    reverse_proxy {
-        to {%- for instance in instances %} {{ instance }} {%- endfor %}
-        lb_policy ip_hash
-    }
-}
-"""
-
-
 async def caddy(queue):
     print(f"Waiting for {queue.maxsize} Ollama instances to start...")
     instances = []
@@ -87,7 +68,45 @@ async def caddy(queue):
         instances.append(hostport)
 
     with tempfile.NamedTemporaryFile(mode="w") as f:
-        f.write(jinja2.Template(tmpl).render(instances=instances))
+        json.dump(
+            {
+                "admin": {"disabled": True},
+                "logging": {
+                    "logs": {
+                        "default": {"level": "DEBUG", "writer": {"output": "stdout"}}
+                    },
+                },
+                "apps": {
+                    "http": {
+                        "servers": {
+                            "srv0": {
+                                "listen": [":54321"],
+                                "routes": [
+                                    {
+                                        "handle": [
+                                            {
+                                                "handler": "reverse_proxy",
+                                                "load_balancing": {
+                                                    "selection_policy": {
+                                                        "policy": "ip_hash"
+                                                    },
+                                                },
+                                                "upstreams": [
+                                                    {"dial": instance}
+                                                    for instance in instances
+                                                ],
+                                            }
+                                        ]
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+            f,
+        )
+
         f.flush()
         p = await asyncio.create_subprocess_exec("caddy", "run", "--config", f.name)
         await p.communicate()
