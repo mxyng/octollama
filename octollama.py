@@ -90,6 +90,11 @@ async def caddy(queue):
                                         "handle": [
                                             {
                                                 "handler": "reverse_proxy",
+                                                "transport": {
+                                                    "protocol": "http",
+                                                    "read_buffer_size": 0,
+                                                    "write_buffer_size": 0,
+                                                },
                                                 "load_balancing": {
                                                     "selection_policy": {
                                                         "policy": "ip_hash"
