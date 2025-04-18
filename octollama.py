@@ -18,7 +18,7 @@ async def ollama(queue):
     p = await asyncio.create_subprocess_exec(
         "ollama",
         "serve",
-        stdout=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env={
             **os.environ,
@@ -32,13 +32,17 @@ async def ollama(queue):
             return
 
         while True:
-            line = (await outerr.readline()).decode().strip()
+            line = (await outerr.readline()).strip()
             if not line:
                 break
 
-            print(line)
-            for fn in fns:
-                await fn(line)
+            try:
+                line = line.decode()
+                print(line)
+                for fn in fns:
+                    await fn(line)
+            except Exception as e:
+                ...
 
     async def put(line):
         await queue.put(line)
