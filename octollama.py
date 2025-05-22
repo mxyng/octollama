@@ -1,9 +1,12 @@
+import argparse
+import asyncio
+import json
 import os
 import re
-import asyncio
-import argparse
 import tempfile
-import json
+
+import httpx
+from prometheus_client.parser import text_string_to_metric_families
 
 
 def match(pattern, fn):
@@ -41,7 +44,7 @@ async def ollama(queue):
                 print(line)
                 for fn in fns:
                     await fn(line)
-            except Exception as e:
+            except Exception:
                 ...
 
     async def put(line):
@@ -70,6 +73,7 @@ async def caddy(queue):
         hostport = await queue.get()
         print(f"Got Ollama instance: {hostport}")
         instances.append(hostport)
+        queue.task_done()
 
     with tempfile.NamedTemporaryFile(mode="w") as f:
         json.dump(
@@ -82,7 +86,12 @@ async def caddy(queue):
                 },
                 "apps": {
                     "http": {
+                        "metrics": {},
                         "servers": {
+                            "metrics": {
+                                "listen": ["127.0.0.1:9090"],
+                                "routes": [{"handle": [{"handler": "metrics"}]}],
+                            },
                             "srv0": {
                                 "listen": [":54321"],
                                 "routes": [
@@ -104,6 +113,11 @@ async def caddy(queue):
                                                     {"dial": instance}
                                                     for instance in instances
                                                 ],
+                                                "health_checks": {
+                                                    "active": {
+                                                        "uri": "/",
+                                                    },
+                                                },
                                             }
                                         ]
                                     }
@@ -123,6 +137,24 @@ async def caddy(queue):
             raise RuntimeError(f"Caddy exited with code {p.returncode}")
 
 
+async def healthcheck():
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                r = await client.get("http://127.0.0.1:9090/metrics")
+                r.raise_for_status()
+
+                for metric in text_string_to_metric_families(r.text):
+                    if metric.name != "caddy_reverse_proxy_upstreams_healthy":
+                        continue
+                    if any(sample.value != 1 for sample in metric.samples):
+                        raise RuntimeError("Healthcheck failed")
+                await asyncio.sleep(5)
+            except httpx.RequestError:
+                await asyncio.sleep(1)
+                ...
+
+
 async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-n", type=int, default=8)
@@ -132,6 +164,7 @@ async def main():
     await asyncio.gather(
         *[ollama(queue) for _ in range(args.n)],
         caddy(queue),
+        healthcheck(),
     )
 
 
